@@ -1,118 +1,167 @@
-import numpy as np 
-import pandas as pd 
-import os 
+import numpy as np
+import pandas as pd
+import os
+import re
+from pathlib import Path
+
+# Configuration
+BASE_DIR = Path("C:/Users/holub/Data/afiliados")  # Set your project folder here
+DATA_DIR = BASE_DIR / "src_data"
+OUTPUT_DIR = BASE_DIR / "out_data"
+TARGET_COLUMN = "GENERAL"  # Change this to analyze different columns
+GENERAL_COLUMN_ALIAS = "Reg. General(1)"
 
 
-"""
-this file creates two CSVs -> see README
-average is constructed for column "GENERAL"
-if interested in other values, replace "GENERAL" with column name of interest 
-exchange below to local path of project folder
-"""
-wd = "Path to yoour project folder"
-os.chdir(wd) 
-
-
-#functions 
-def get_date(string): 
+def get_date_from_filename(filename):
     """
-    Get date from a filename of format "AfiliadosMuni-01-2003"
+    Extract year and month from filename format 'AfiliadosMuni-MM-YYYY*'
+    Handles variations like:
+    - AfiliadosMuni-01-2010_late_data.xlsx
+    - AfiliadosMuni-01-2012+DEFINITIVO+mod_late_data.xlsx
+    - AfiliadosMuni-03-2005.xlsx
     """
-    month = string[-7:-5]
-    if int(month[0]) == 0: 
-        month = int(month[1])
-    else: 
-        month = int(month)
-    year = int(string[-4:])
-    return(year, month)
+    # Use regex to extract the month-year pattern
+    match = re.search(r"AfiliadosMuni-(\d{2})-(\d{4})", filename)
+    if match:
+        month = int(match.group(1))
+        year = int(match.group(2))
+        return year, month
+    else:
+        raise ValueError(f"Could not extract date from filename: {filename}")
 
 
-def get_muni_code(df_muni): 
-    """
-    df_muni is df element which contains names of municipio and code
-    """
-    code = []
-    df_muni = df_muni[df_muni.isnull() == False]
-    df_muni = df_muni[df_muni != "SIN DISTRIBUCIÓN (*)"]
-    for x in df_muni.tolist():
-        code.append(int(x.split()[0]))
-    return(code)
+def extract_municipality_codes(municipality_series):
+    """Extract municipality codes from municipality names"""
+    # Filter out null values and distribution placeholders
+    valid_munis = municipality_series.dropna()
+    valid_munis = valid_munis[valid_munis != "SIN DISTRIBUCIÓN (*)"]
 
-#CREATE DATASET
-#read in data to initialize columns 
-#code below that is turned to comment must be run once to save a csv 
-#including all data, afterwards can be turned back to comment 
-"""
-
-#CREATE DATASET
-#read in data to initialize columns 
-
-data_init = pd.reader_excel("src_data/" + os.listdir("src_data")[0], header = 1)
-#get columns
-columns = list(data_init.columns)
-#append a year and month column
-columns.append("year")
-columns.append("month")
-#intiliaze empty df with columns
-data_total = pd.DataFrame(columns = columns)
-#only add files to file list that are .xlsx (otherwise invisible files might be added, eg. .DS_Store)
-file_list = [f for f in os.listdir("src_data") if f.endswith(".xlsx")]
-#loop over all 
-for file in file_list:
-    data = pd.read_excel("src_data/" + file, header = 1)
-    file = file[:-5]
-    year, month = get_date(file)
-    data["year"] = year
-    data["month"] = month 
-    if "Reg. General(1)" in list(data.columns):
-        data = data.rename(columns = {"Reg. General(1)": "GENERAL"})
-    data_total = data_total.append(data, ignore_index = True)
-    print(year, month)
-#write total df to csv such that processing all files is not necessary 
-data_total.to_csv("out_data/all_data.csv")
-"""
-
-data_total = pd.read_csv("out_data/all_data.csv")
-#exchange GENERAL "<5" is substituted with 4 (for now, ask Laura what to do about it)
-data_total["GENERAL"][data_total["GENERAL"] == "<5"] = np.nan
-data_total["GENERAL"] = data_total["GENERAL"].astype(float)
+    # Extract the first number from each municipality name
+    codes = [int(name.split()[0]) for name in valid_munis]
+    return codes
 
 
-#CREATE PANEL 
-#create dataset for municipios of interest (data_moi) 
-# or all municipios
+def load_and_combine_data():
+    """Load all Excel files and combine them into a single DataFrame"""
+    excel_files = list(DATA_DIR.glob("*.xlsx"))
+    if not excel_files:
+        raise FileNotFoundError(f"No Excel files found in {DATA_DIR}")
+
+    # Process all files
+    data_frames = []
+    for file_path in excel_files:
+        try:
+            print(f"Processing: {file_path.name}")
+
+            # Load data
+            data = pd.read_excel(file_path, header=1)
+
+            # Extract date from filename
+            year, month = get_date_from_filename(file_path.name)
+            data["year"] = year
+            data["month"] = month
+
+            # Standardize column names
+            if GENERAL_COLUMN_ALIAS in data.columns:
+                data = data.rename(columns={GENERAL_COLUMN_ALIAS: TARGET_COLUMN})
+
+            data_frames.append(data)
+            print(f"  → Extracted date: {month}/{year}")
+
+        except Exception as e:
+            print(f"Error processing {file_path.name}: {e}")
+            continue
+
+    if not data_frames:
+        raise ValueError("No valid data files were processed")
+
+    # Combine all data
+    combined_data = pd.concat(data_frames, ignore_index=True)
+
+    # Save complete dataset
+    OUTPUT_DIR.mkdir(exist_ok=True)
+    combined_data.to_csv(OUTPUT_DIR / "all_data.csv", index=False)
+
+    return combined_data
 
 
-#only keep columns of interest (interested in "GENERAL")
-data_reduc = data_total[["PROVINCIA", "MUNICIPIO", "GENERAL", "year", "month"]]
-#drop obs where Municipio is missing
-data_reduc = data_reduc[data_reduc["MUNICIPIO"].isnull() == False]
-#drop where no municipio available
-data_reduc = data_reduc[data_reduc["MUNICIPIO"] != "SIN DISTRIBUCIÓN (*)"]
-#drop provincial total level 
-data_reduc = data_reduc[data_reduc["MUNICIPIO"] != "PROVINCIAL"]
+def clean_target_column(data):
+    """Clean the target column by handling special values"""
+    data = data.copy()
 
-data_reduc["MUNI_CODE"] = get_muni_code(data_reduc["MUNICIPIO"])
+    # First convert the column to string type to ensure consistent replacement
+    data[TARGET_COLUMN] = data[TARGET_COLUMN].astype(str)
 
-"""
-UNCOMMENT BELOW ONLY WHEN FILE TO FILTER MUNICIPIOS EXISTS
-#get municipios of interest using list from muni 
-#read in municipios
-#file below is a list of pre-defined municipios of interest 
-#if non available, then ignore 
-muni = pd.read_stata("src_data/samplemunis_pollution.dta")
-data_moi = data_reduc.merge(muni, left_on = "MUNI_CODE", right_on = "municipality", how = "inner")
-#keep Municipio code as identifier
-data_moi = data_moi.drop(["municipality", "MUNICIPIO"], axis = 1)
-"""
+    # Replace "<5" with NaN
+    data.loc[data[TARGET_COLUMN] == "<5", TARGET_COLUMN] = np.nan
 
-#average by municipilaity and year
-averages = data_moi.groupby(["MUNI_CODE", "year"]).mean().reset_index().drop("month", axis = 1)
-averages.to_csv("out_data/averages_muni.csv")
+    # Convert to numeric, coercing any non-numeric values to NaN
+    data[TARGET_COLUMN] = pd.to_numeric(data[TARGET_COLUMN], errors="coerce")
 
-#create dataset for NACIONAL
-data_nacional = data_total[data_total["PROVINCIA"] == "NACIONAL"]
-data_nacional = data_nacional[["PROVINCIA", "GENERAL", "year", "month"]]
-averages_nacional = data_nacional.groupby(["year"]).mean().reset_index().drop("month", axis = 1)
-averages_nacional.to_csv("out_data/averages_nacional.csv")
+    return data
 
+
+def create_municipality_averages(data):
+    """Create municipality-level averages by year"""
+    # Select relevant columns
+    muni_data = data[["PROVINCIA", "MUNICIPIO", TARGET_COLUMN, "year", "month"]].copy()
+
+    # Filter out invalid municipalities
+    muni_data = muni_data.dropna(subset=["MUNICIPIO"])
+    muni_data = muni_data[muni_data["MUNICIPIO"] != "SIN DISTRIBUCIÓN (*)"]
+    muni_data = muni_data[muni_data["MUNICIPIO"] != "PROVINCIAL"]
+
+    # Extract municipality codes
+    muni_data["MUNI_CODE"] = extract_municipality_codes(muni_data["MUNICIPIO"])
+
+    # Calculate averages by municipality and year
+    averages = (
+        muni_data.groupby(["MUNI_CODE", "year"])[TARGET_COLUMN].mean().reset_index()
+    )
+
+    return averages
+
+
+def create_national_averages(data):
+    """Create national-level averages by year"""
+    # Filter for national data
+    national_data = data[data["PROVINCIA"] == "NACIONAL"]
+    national_data = national_data[["PROVINCIA", TARGET_COLUMN, "year", "month"]]
+
+    # Calculate averages by year
+    averages = national_data.groupby("year")[TARGET_COLUMN].mean().reset_index()
+    averages["PROVINCIA"] = "NACIONAL"
+
+    return averages
+
+
+def main():
+    """Main processing function"""
+    print(f"Working with data in: {BASE_DIR}")
+    print("Starting data processing...")
+
+    # Always process all files
+    print("Combining source files...")
+    data = load_and_combine_data()
+
+    # Clean the target column
+    print("Cleaning data...")
+    data = clean_target_column(data)
+
+    # Create municipality averages
+    print("Creating municipality averages...")
+    muni_averages = create_municipality_averages(data)
+    muni_averages.to_csv(OUTPUT_DIR / "averages_muni.csv", index=False)
+
+    # Create national averages
+    print("Creating national averages...")
+    national_averages = create_national_averages(data)
+    national_averages.to_csv(OUTPUT_DIR / "averages_nacional.csv", index=False)
+
+    print("Processing complete!")
+    print(f"Municipality averages: {len(muni_averages)} rows")
+    print(f"National averages: {len(national_averages)} rows")
+
+
+if __name__ == "__main__":
+    main()
