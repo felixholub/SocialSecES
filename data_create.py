@@ -8,8 +8,6 @@ from pathlib import Path
 BASE_DIR = Path("C:/Users/holub/Data/afiliados")  # Set your project folder here
 DATA_DIR = BASE_DIR / "src_data"
 OUTPUT_DIR = BASE_DIR / "out_data"
-TARGET_COLUMN = "GENERAL"  # Change this to analyze different columns
-GENERAL_COLUMN_ALIAS = "Reg. General(1)"
 
 
 def get_date_from_filename(filename):
@@ -56,14 +54,38 @@ def load_and_combine_data():
             # Load data
             data = pd.read_excel(file_path, header=1)
 
+            # Remove rows with all missing values
+            data = data.dropna(how="all")
+
+            # Remove rows where "PROVINCIA" starts with an opening parenthesis
+            data = data[~data["PROVINCIA"].astype(str).str.startswith("(")]
+
+            # Remove rows where "MUNICIPIO" starts with "SIN DISTRIBUCIÓN"
+            data = data[
+                ~data["MUNICIPIO"].astype(str).str.startswith("SIN DISTRIBUCIÓN")
+            ]
+
             # Extract date from filename
             year, month = get_date_from_filename(file_path.name)
             data["year"] = year
             data["month"] = month
 
-            # Standardize column names
-            if GENERAL_COLUMN_ALIAS in data.columns:
-                data = data.rename(columns={GENERAL_COLUMN_ALIAS: TARGET_COLUMN})
+            column_renames = {
+                "Reg. General(1)": "GENERAL",
+                "TRAB.": "TRAB",
+                "R. G.- S.E.Agrario": "AGRARIO",
+                "R.E.MAR": "MAR",
+                "HOGAR (2)": "HOGAR",
+                "R.E.Autónomos": "AUTONOMOS",
+                "R.E. Carbón": "CARBON",
+                "R. G.- S.E.Hogar(2)": "HOGAR",
+                "R. E. MAR": "MAR",
+                "R. E. T. Autónomos": "AUTONOMOS",
+                "R. E. M. Carbón": "CARBON",
+                "R. G.- S.E.Hogar": "HOGAR",
+                "R. E. MAR ": "MAR",
+            }
+            data = data.rename(columns=column_renames)
 
             data_frames.append(data)
             print(f"  → Extracted date: {month}/{year}")
@@ -85,30 +107,52 @@ def load_and_combine_data():
     return combined_data
 
 
-def clean_target_column(data):
-    """Clean the target column by handling special values"""
+def clean_numeric_columns(data):
+    """Clean all numeric columns by handling special values"""
     data = data.copy()
 
-    # First convert the column to string type to ensure consistent replacement
-    data[TARGET_COLUMN] = data[TARGET_COLUMN].astype(str)
+    # List of columns that should be numeric
+    numeric_columns = [
+        "GENERAL",
+        "AGRARIO",
+        "MAR",
+        "HOGAR",
+        "AUTONOMOS",
+        "CARBON",
+        "TOTAL",
+    ]
 
-    # Replace "<5" with NaN
-    data.loc[data[TARGET_COLUMN] == "<5", TARGET_COLUMN] = np.nan
+    for column in numeric_columns:
+        if column in data.columns:
+            # Convert to string first to ensure consistent replacement
+            data[column] = data[column].astype(str)
 
-    # Convert to numeric, coercing any non-numeric values to NaN
-    data[TARGET_COLUMN] = pd.to_numeric(data[TARGET_COLUMN], errors="coerce")
+            # Replace "<5" with NaN
+            data.loc[data[column] == "<5", column] = np.nan
+
+            # Convert to numeric, coercing any non-numeric values to NaN
+            data[column] = pd.to_numeric(data[column], errors="coerce")
 
     return data
 
 
+def determine_afiliados(data):
+    """Create a single measure of general afiliados"""
+    data = data.copy()
+
+    # Before 2012, use GENERAL; from 2012 onwards, use GENERAL + HOGAR if HOGAR is not NA
+    data["AFILIADOS"] = np.where(
+        (data["year"] < 2012) | (data["HOGAR"].isna()),
+        data["GENERAL"],
+        data["GENERAL"] + data["HOGAR"],
+    )
+    data = data[["PROVINCIA", "MUNICIPIO", "year", "month", "AFILIADOS"]]
+    return data
+
 def create_municipality_averages(data):
     """Create municipality-level averages by year"""
-    # Select relevant columns
-    muni_data = data[["PROVINCIA", "MUNICIPIO", TARGET_COLUMN, "year", "month"]].copy()
-
     # Filter out invalid municipalities
-    muni_data = muni_data.dropna(subset=["MUNICIPIO"])
-    muni_data = muni_data[muni_data["MUNICIPIO"] != "SIN DISTRIBUCIÓN (*)"]
+    muni_data = data.dropna(subset=["MUNICIPIO"])
     muni_data = muni_data[muni_data["MUNICIPIO"] != "PROVINCIAL"]
 
     # Extract municipality codes
@@ -116,7 +160,7 @@ def create_municipality_averages(data):
 
     # Calculate averages by municipality and year
     averages = (
-        muni_data.groupby(["MUNI_CODE", "year"])[TARGET_COLUMN].mean().reset_index()
+        muni_data.groupby(["MUNI_CODE", "year"])["AFILIADOS"].mean().reset_index()
     )
 
     return averages
@@ -126,12 +170,25 @@ def create_national_averages(data):
     """Create national-level averages by year"""
     # Filter for national data
     national_data = data[data["PROVINCIA"] == "NACIONAL"]
-    national_data = national_data[["PROVINCIA", TARGET_COLUMN, "year", "month"]]
+    national_data = national_data[["PROVINCIA", "AFILIADOS", "year", "month"]]
 
     # Calculate averages by year
-    averages = national_data.groupby("year")[TARGET_COLUMN].mean().reset_index()
+    averages = national_data.groupby("year")["AFILIADOS"].mean().reset_index()
     averages["PROVINCIA"] = "NACIONAL"
 
+    return averages
+
+
+def create_provincial_averages(data):
+    """Create provincial-level averages by year"""
+    # Filter out provincial data"""
+    provincial_data = data[data["MUNICIPIO"] == "PROVINCIAL"]
+    provincial_data = provincial_data[["PROVINCIA", "AFILIADOS", "year", "month"]]
+
+    # Calculate averages by province and year
+    averages = (
+        provincial_data.groupby(["PROVINCIA", "year"])["AFILIADOS"].mean().reset_index()
+    )
     return averages
 
 
@@ -146,7 +203,8 @@ def main():
 
     # Clean the target column
     print("Cleaning data...")
-    data = clean_target_column(data)
+    data = clean_numeric_columns(data)
+    data = determine_afiliados(data)
 
     # Create municipality averages
     print("Creating municipality averages...")
@@ -158,9 +216,15 @@ def main():
     national_averages = create_national_averages(data)
     national_averages.to_csv(OUTPUT_DIR / "averages_nacional.csv", index=False)
 
+    # Create provincial averages
+    print("Creating provincial averages...")
+    provincial_averages = create_provincial_averages(data)
+    provincial_averages.to_csv(OUTPUT_DIR / "averages_provincial.csv", index=False)
+
     print("Processing complete!")
     print(f"Municipality averages: {len(muni_averages)} rows")
     print(f"National averages: {len(national_averages)} rows")
+    print(f"Provincial averages: {len(provincial_averages)} rows")
 
 
 if __name__ == "__main__":

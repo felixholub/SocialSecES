@@ -31,7 +31,7 @@ options.set_preference(
 
 # URLs to scrape
 urls = {
-    # "early_data": "https://www.seg-social.es/wps/portal/wss/internet/EstadisticasPresupuestosEstudios/Estadisticas/EST8/EST167/5b11b695-cf1c-4abe-8a12-ecd2d0d15271/2683/2684?changeLanguage=es",
+    "early_data": "https://www.seg-social.es/wps/portal/wss/internet/EstadisticasPresupuestosEstudios/Estadisticas/EST8/EST167/5b11b695-cf1c-4abe-8a12-ecd2d0d15271/2683/2684?changeLanguage=es",
     "late_data": "https://www.seg-social.es/wps/portal/wss/internet/EstadisticasPresupuestosEstudios/Estadisticas/EST8/EST167/5b11b695-cf1c-4abe-8a12-ecd2d0d15271/2683/3460",
 }
 
@@ -308,4 +308,3 @@ print("=" * 50)
 print(f"Data saved to: {target_dir}")
 print(f"Total files collected: {total_moved}")
 print("=" * 50)
-
